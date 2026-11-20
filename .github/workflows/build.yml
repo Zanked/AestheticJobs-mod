@@ -1,34 +1,59 @@
-name: Build Aesthetic Jobs
+name: Build jar from archive
 
 on:
   push:
     branches: [main, master]
     paths:
-      - "aestheticjobs_mod.zip"
-      - "tools/assemble.sh"
+      - "*.zip"
       - ".github/workflows/build.yml"
   workflow_dispatch:
+    inputs:
+      archive:
+        description: "Archive to build (default: the zip changed in the last commit, or aestheticjobs_project.zip)"
+        required: false
+        default: ""
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Find and unpack the archive
+        id: unpack
+        env:
+          INPUT_ARCHIVE: ${{ inputs.archive }}
+        run: |
+          ARCHIVE="$INPUT_ARCHIVE"
+          if [ -z "$ARCHIVE" ]; then
+            ARCHIVE=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- '*.zip' 2>/dev/null | head -n 1 || true)
+          fi
+          [ -n "$ARCHIVE" ] || ARCHIVE="aestheticjobs_project.zip"
+          [ -f "$ARCHIVE" ] || { echo "Archive not found: $ARCHIVE"; exit 1; }
+          rm -rf project && mkdir project
+          unzip -q "$ARCHIVE" -d project
+          GRADLEW=$(find project -maxdepth 3 -name gradlew | head -n 1)
+          [ -n "$GRADLEW" ] || { echo "gradlew not found: the archive must be a full Gradle project"; exit 1; }
+          DIR=$(dirname "$GRADLEW")
+          chmod +x "$GRADLEW"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
+
       - uses: gradle/actions/setup-gradle@v4
-      - name: Unpack the archive and assemble the project
-        run: bash tools/assemble.sh aestheticjobs_mod.zip build_project
-        env:
-          MOD_AUTHORS: ${{ vars.MOD_AUTHORS }}
+
       - name: Build the jar
-        working-directory: build_project
+        working-directory: ${{ steps.unpack.outputs.dir }}
         run: ./gradlew build --no-daemon --no-configuration-cache --stacktrace
+
       - name: Upload the jar
         uses: actions/upload-artifact@v4
         with:
-          name: aestheticjobs-jar
-          path: build_project/build/libs/*.jar
+          name: jar
+          path: ${{ steps.unpack.outputs.dir }}/build/libs/*.jar
           if-no-files-found: error
